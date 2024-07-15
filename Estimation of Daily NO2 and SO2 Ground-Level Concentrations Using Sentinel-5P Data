@@ -1,0 +1,216 @@
+/// 1- Zoom Extent and Create Layer From ROI
+Map.centerObject(ROI, 8);
+Map.addLayer(ROI, {color: 'blue'}, 'ROI', false);
+
+/// 2- Introduce the Start and End Times
+var start = ee.Date('2020-07-01');
+var end = ee.Date('2020-08-01');
+
+/// 3- Load Image Collections
+
+// Load Sentinel-5P NO2 Product
+var NO2_col = ee.ImageCollection('COPERNICUS/S5P/NRTI/L3_NO2')
+           .filterBounds(ROI)
+           .filterDate(start, end)
+           .mean()
+           .select(['tropospheric_NO2_column_number_density'], ['NO2'])
+           .clip(ROI);
+
+print('NO2_col', NO2_col);
+Map.addLayer(NO2_col, {}, 'NO2_col', false);
+
+// Load Sentinel-5P SO2 Product
+var SO2_col = ee.ImageCollection('COPERNICUS/S5P/NRTI/L3_SO2')
+           .filterBounds(ROI)
+           .filterDate(start, end)
+           .mean()
+           .select(['SO2_column_number_density'], ['SO2'])
+           .clip(ROI);
+
+print('SO2_col', SO2_col);
+Map.addLayer(SO2_col, {}, 'SO2_col', false);
+
+// 4- Stack Band Layers (NO2_col + SO2_col)
+var stack = NO2_col.addBands(SO2_col);
+print('stack', stack);
+
+// 5- Create Random Points
+var samples = ee.FeatureCollection.randomPoints({
+  region: ROI,
+  points: 800
+});
+print('samples', samples);
+Map.addLayer(samples, {color: 'green', pointSize: 1}, 'samples', false);
+
+// 6- Extract Multi Values to Sample Points
+var featureProperties = stack.sampleRegions({
+  collection: samples,
+  scale: 1000 // Approximate resolution of Sentinel products
+}).map(function(point){
+  return point.set({constant: 1});
+});
+print('FeatureProperties', featureProperties);
+
+// * Define Variables for regression analysis: NO2 = X (independent parameter), SO2 = Y (dependent parameter)
+
+// 7- Convert Feature Collections to List
+var ListOfFeatures = ee.List(featureProperties.reduceColumns({
+  reducer: ee.Reducer.toList().repeat(2), 
+  selectors: ['NO2', 'SO2']
+}).get('list'));
+print('ListOfFeatures', ListOfFeatures);
+
+// 8- Introduce Independent and Dependent Variables
+var independentVariable = ee.Array(ListOfFeatures.get(0));
+print('x', independentVariable);
+
+var dependentVariable = ee.Array(ListOfFeatures.get(1));
+print('y_observed', dependentVariable);
+
+// 9- Linear Regression: Y = a + bX
+var linearReg = featureProperties.reduceColumns({
+  reducer: ee.Reducer.linearRegression({numX: 2, numY: 1}),
+  selectors: ['constant', 'NO2', 'SO2']
+});
+print('LinearRegression', linearReg);
+
+// 10- Extract Coefficients from Linear Regression Bands
+var coef = ee.Array(linearReg.get('coefficients')).toList();
+print('coefficients', coef);
+
+var intercept = ee.List(coef.get(0)).get(0);
+print('intercept', intercept);
+
+var slope = ee.List(coef.get(1)).get(0);
+print('slope', slope);
+
+// 11- Calculate Predicted-y (y hat)
+var yhat = ee.Array(ee.List(ListOfFeatures.get(0))
+  .map(function(x){
+    var y = ee.Number(x).multiply(slope).add(intercept);
+    return y;
+  }));
+print('yhat', yhat);
+
+// 12- Cat of y-observed and y-hat
+var yobsyhat = ee.Array.cat([dependentVariable, yhat], 1);
+print('yobsyhat', yobsyhat);
+
+// 13- Create chart using Linear Regression Estimation
+var chart_reg = ui.Chart.array.values({
+  array: yobsyhat,
+  axis: 0, 
+  xLabels: independentVariable
+}).setChartType('ScatterChart')
+  .setOptions({
+    title: 'Scatter Plot of Linear Regression',
+    hAxis: {title: 'NO2 (independent variable)'},
+    vAxis: {title: 'SO2 '},
+    series: {
+      0: {
+        color: 'green',
+        pointSize: 3,
+        pointShape: 'circle',
+        dataOpacity: 0.5
+      },
+      1: {
+        color: 'red',
+        pointSize: 2,
+        pointShape: 'circle',
+        dataOpacity: 0.9
+      }
+    }
+});
+print('chart_reg', chart_reg);
+
+// 14- Create chart using Trend Line (linear)
+var chart_trend_linear = ui.Chart.array.values({
+  array: dependentVariable,
+  axis: 0, 
+  xLabels: independentVariable
+}).setChartType('ScatterChart')
+  .setOptions({
+    title: 'Scatter Plot of Trend Line',
+    hAxis: {title: 'NO2 (independent variable)'},
+    vAxis: {title: 'SO2 (dependent variable)'},
+    trendlines: {
+      0: {
+        color: 'blue',
+        linewidth: 3,
+        type: 'linear',
+        showR2: true,
+        visibleInLegend: true
+      } 
+    },
+    series: {
+      0: {
+        color: 'green',
+        pointSize: 3,
+        pointShape: 'circle',
+        dataOpacity: 0.5
+      }
+    }
+});
+print('chart_trend_linear', chart_trend_linear);
+
+// 15- Create chart using Trend Line (polynomial)
+var chart_trend_poly = ui.Chart.array.values({
+  array: dependentVariable,
+  axis: 0, 
+  xLabels: independentVariable
+}).setChartType('ScatterChart')
+  .setOptions({
+    title: 'Scatter Plot of Trend Line',
+    hAxis: {title: 'NO2 (independent variable)'},
+    vAxis: {title: 'SO2 (dependent variable)'},
+    trendlines: {
+      0: {
+        color: 'blue',
+        linewidth: 3,
+        type: 'polynomial',
+        degree: 3,
+        showR2: true,
+        visibleInLegend: true
+      } 
+    },
+    series: {
+      0: {
+        color: 'green',
+        pointSize: 3,
+        pointShape: 'circle',
+        dataOpacity: 0.5
+      }
+    }
+});
+print('chart_trend_poly', chart_trend_poly);
+
+// 16- Create chart using Trend Line (exponential)
+var chart_trend_exponential = ui.Chart.array.values({
+  array: dependentVariable,
+  axis: 0, 
+  xLabels: independentVariable
+}).setChartType('ScatterChart')
+  .setOptions({
+    title: 'Scatter Plot of Trend Line',
+    hAxis: {title: 'NO2 (independent variable)'},
+    vAxis: {title: 'SO2 (dependent variable)'},
+    trendlines: {
+      0: {
+        color: 'blue',
+        linewidth: 3,
+        type: 'exponential',
+        degree: 3,
+        showR2: true,
+        visibleInLegend: true
+      } 
+    },
+    series: {
+      0: {
+        color: 'green',
+        pointSize: 3,
+        pointShape: 'circle',
+        dataOpacity: 0.5
+      }
+    }
+});
+print('chart_trend_exponential', chart_trend_exponential);
